@@ -6,6 +6,14 @@
 EXTERN_C_START;
 
 
+typedef struct _FILE_CHUNK_CONTEXT {
+    HANDLE hDest;
+    BYTE* buffer;
+    DWORD bufferSize;
+    LARGE_INTEGER offset;
+} FILE_CHUNK_CONTEXT, * PFILE_CHUNK_CONTEXT;
+
+
 /*
  * @brief       This command will be called at the beginning to initialize support for the safe storage lib.
  *              Here you can create global data, find %APPDIR%, and allocate/ create any resources you consider necessary

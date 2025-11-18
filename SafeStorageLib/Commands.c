@@ -1,4 +1,5 @@
 ﻿#include "Commands.h"
+#include <tchar.h>
 
 
 char* CurrentUser;
@@ -142,6 +143,43 @@ SafeStorageHandleLogout(
 }
 
 
+VOID
+CALLBACK
+MyWorkCallback(
+    PTP_CALLBACK_INSTANCE Instance,
+    PVOID                 Parameter,
+    PTP_WORK              Work
+)
+{
+    UNREFERENCED_PARAMETER(Instance);
+    UNREFERENCED_PARAMETER(Work);
+
+    PFILE_CHUNK_CONTEXT pv = (PFILE_CHUNK_CONTEXT)Parameter;
+
+    OVERLAPPED ov = { 0 };
+    ov.Offset = pv->offset.LowPart;
+    ov.OffsetHigh = pv->offset.HighPart;
+
+    DWORD bytesWritten = 0;
+    BOOL ok = WriteFile(pv->hDest, pv->buffer, pv->bufferSize, &bytesWritten, &ov);
+
+    if (!ok) {
+        DWORD err = GetLastError();
+        if (err != ERROR_IO_PENDING) {
+            printf("WriteFile failed. LastError: %u\n", err);
+
+            free(pv->buffer);
+            free(pv);
+        }
+    }
+
+    printf("Wrote %d bytes\n", bytesWritten);
+
+    free(pv->buffer);
+    free(pv);
+}
+
+
 NTSTATUS WINAPI
 SafeStorageHandleStore(
     const char* SubmissionName,
@@ -150,16 +188,110 @@ SafeStorageHandleStore(
     uint16_t SourceFilePathLength
 )
 {
-    /* The function is not implemented. It is your responsibility. */
-    /* After you implement the function, you can remove UNREFERENCED_PARAMETER(x). */
-    /* This is just to prevent a compilation warning that the parameter is unused. */
-
-    UNREFERENCED_PARAMETER(SubmissionName);
     UNREFERENCED_PARAMETER(SubmissionNameLength);
-    UNREFERENCED_PARAMETER(SourceFilePath);
     UNREFERENCED_PARAMETER(SourceFilePathLength);
 
-    return STATUS_NOT_IMPLEMENTED;
+    PTP_POOL pool = NULL;
+    TP_CALLBACK_ENVIRON CallBackEnviron;
+    BOOL bRet = FALSE;
+    PTP_WORK_CALLBACK workcallback = MyWorkCallback;
+    PFILE_CHUNK_CONTEXT pv;
+
+    //printf("%s\n", SourceFilePath);
+
+    HANDLE hSrc = CreateFileA(SourceFilePath, GENERIC_READ, 0, NULL, OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL, NULL);
+
+    if (hSrc == INVALID_HANDLE_VALUE) {
+        printf("CreateFileA for source failed. LastError: %u\n", GetLastError());
+        return STATUS_UNSUCCESSFUL;
+    }
+
+
+    HANDLE hDest = CreateFileA(SubmissionName, GENERIC_READ | GENERIC_WRITE, 0, NULL, OPEN_ALWAYS, FILE_ATTRIBUTE_NORMAL | FILE_FLAG_OVERLAPPED, NULL);
+
+    if (hDest == INVALID_HANDLE_VALUE) {
+        printf("CreateFileA for destination failed. LastError: %u\n", GetLastError());
+        return STATUS_UNSUCCESSFUL;
+    }
+
+    //printf("DA\n");
+
+    InitializeThreadpoolEnvironment(&CallBackEnviron);
+
+    pool = CreateThreadpool(NULL);
+
+    if (pool == NULL) {
+        printf("CreateThreadpool failed. LastError: %u\n", GetLastError());
+        return STATUS_UNSUCCESSFUL;
+    }
+
+    SetThreadpoolThreadMaximum(pool, 4);
+
+    bRet = SetThreadpoolThreadMinimum(pool, 4);
+
+    if (bRet == FALSE) {
+        printf("SetThreadpoolThreadMinimum failed. LastError: %u\n", GetLastError());
+        return STATUS_UNSUCCESSFUL;
+    }
+
+    SetThreadpoolCallbackPool(&CallBackEnviron, pool);
+
+    DWORD bytesRead = 0;
+    LARGE_INTEGER size = { 0 };
+
+    GetFileSizeEx(hSrc, &size);
+
+    //printf("File size: %d\n", size.LowPart);
+    //printf("File size: %d\n", size.HighPart);
+
+    DWORD chunkSize = (DWORD)(size.QuadPart / 4 + 1);
+
+    ULONGLONG fileOffset = 0;
+
+    BYTE* buf = (BYTE*)malloc(chunkSize);
+    if (!buf) {
+        return STATUS_UNSUCCESSFUL;
+    }
+
+    //printf("Chunk size: %d\n", chunkSize);
+
+    PTP_WORK work[4];
+
+    int workIndex = 0;
+    while (ReadFile(hSrc, buf, chunkSize, &bytesRead, NULL) && bytesRead > 0) {
+        pv = malloc(sizeof(FILE_CHUNK_CONTEXT));
+
+        pv->hDest = hDest;
+        pv->buffer = malloc(bytesRead);
+        memcpy(pv->buffer, buf, bytesRead);
+        
+        //printf("%s\n", buf);
+        //printf("%d\n", bytesRead);
+
+        pv->bufferSize = bytesRead;
+        pv->offset.QuadPart = fileOffset;
+
+        work[workIndex] = CreateThreadpoolWork(workcallback, (PVOID)pv, &CallBackEnviron);
+
+        if (work[workIndex] == NULL) {
+            printf("CreateThreadpoolWork failed. LastError: %u\n", GetLastError());
+        }
+
+        printf("Read %d bytes\n", bytesRead);
+
+        SubmitThreadpoolWork(work[workIndex]);
+
+        fileOffset += bytesRead;
+
+        workIndex += 1;
+    }
+
+    for (int i = 0; i < 4; i++) {
+        WaitForThreadpoolWorkCallbacks(work[i], FALSE);
+        CloseThreadpoolWork(work[i]);
+    }
+
+    return STATUS_SUCCESS;
 }
 
 
