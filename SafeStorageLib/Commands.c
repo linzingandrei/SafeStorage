@@ -3,6 +3,7 @@
 
 
 char* CurrentUser;
+char* CurrentUsersDirectory;
 
 NTSTATUS WINAPI
 SafeStorageInit(
@@ -10,6 +11,7 @@ SafeStorageInit(
 )
 {
     CurrentUser = calloc(11, sizeof(char));
+    CurrentUsersDirectory = calloc(260, sizeof(char));
     return STATUS_SUCCESS;
 }
 
@@ -43,7 +45,6 @@ SafeStorageHandleRegister(
     lstrcpyA(UsersFile, CurrentDirectoryName);
     lstrcatA(UsersFile, "\\users.txt");
     printf("%s\n", UsersFile);
-    HANDLE UserDataFile = CreateFileA(UsersFile, FILE_APPEND_DATA, 0, NULL, OPEN_ALWAYS, FILE_ATTRIBUTE_NORMAL, NULL);
 
     char* UserData;
     int UserDataSize = UsernameLength + PasswordLength + 2;
@@ -55,7 +56,10 @@ SafeStorageHandleRegister(
     lstrcatA(UserData, "\r\n");
 
     DWORD NumberOfBytesWrittenInUserDataFile;
+
+    HANDLE UserDataFile = CreateFileA(UsersFile, FILE_APPEND_DATA, 0, NULL, OPEN_ALWAYS, FILE_ATTRIBUTE_NORMAL, NULL);
     WriteFile(UserDataFile, UserData, strlen(UserData), &NumberOfBytesWrittenInUserDataFile, NULL);
+    CloseHandle(UserDataFile);
 
     char* UsersDirectoryPath;
     UsersDirectoryPath = lstrcatA(CurrentDirectoryName, "\\users");
@@ -63,8 +67,8 @@ SafeStorageHandleRegister(
 
     lstrcatA(UsersDirectoryPath, "\\");
     lstrcatA(UsersDirectoryPath, Username);
+    lstrcatA(UsersDirectoryPath, "\0");
     CreateDirectoryA(UsersDirectoryPath, NULL);
-    //CreateDirectoryA(Username, NULL);
 
 
     return STATUS_SUCCESS;
@@ -115,8 +119,21 @@ SafeStorageHandleLogin(
                 printf("Username: %s, Password %s\n", FileUsername, FilePassword);
 
                 if (strncmp(FileUsername, Username, UsernameLength) == 0 && strncmp(FilePassword, Password, PasswordLength) == 0) {
-                    strncpy(CurrentUser, Username, UsernameLength);
-                    printf("Welcome %s\n", CurrentUser);
+                    strncpy(CurrentUser, FileUsername, UsernameLength);
+
+                    char CurrentDirectoryName[MAX_PATH];
+                    GetCurrentDirectoryA(MAX_PATH, CurrentDirectoryName);
+                    char* UsersDirectoryPath;
+                    UsersDirectoryPath = lstrcatA(CurrentDirectoryName, "\\users");
+
+                    lstrcatA(UsersDirectoryPath, "\\");
+                    lstrcatA(UsersDirectoryPath, FileUsername);
+                    lstrcatA(UsersDirectoryPath, "\\");
+                    lstrcatA(UsersDirectoryPath, "\0");
+
+                    strncpy(CurrentUsersDirectory, UsersDirectoryPath, MAX_PATH);
+
+                    printf("Welcome %s\n", FileUsername);
                     break;
                 }
 
@@ -128,6 +145,8 @@ SafeStorageHandleLogin(
         }
     }
 
+    CloseHandle(UserDataFile);
+
     return STATUS_SUCCESS;
 }
 
@@ -137,7 +156,13 @@ SafeStorageHandleLogout(
     VOID
 )
 {
-    CurrentUser = calloc(11, sizeof(char));
+    for (int i = 0; i < 11; i++) {
+        CurrentUser[i] = '\0';
+    }
+
+    for (int i = 0; i < 260; i++) {
+        CurrentUsersDirectory[i] = '\0';
+    }
 
     return STATUS_SUCCESS;
 }
@@ -173,7 +198,13 @@ MyWorkCallback(
         }
     }
 
-    printf("Wrote %d bytes\n", bytesWritten);
+    // Not working. Not sure how to display them without waiting in the worker which would make no sense
+    // printf("Wrote %d bytes\n", bytesWritten); 
+
+    /*printf("Thread %d\n", GetCurrentThreadId());
+    Sleep(3000);
+    printf("Thread %d\n", GetCurrentThreadId());
+    printf("A\n");*/
 
     free(pv->buffer);
     free(pv);
@@ -206,11 +237,162 @@ SafeStorageHandleStore(
         return STATUS_UNSUCCESSFUL;
     }
 
+    char submissionPath[MAX_PATH];
+    strcpy_s(submissionPath, MAX_PATH, CurrentUsersDirectory);
+    lstrcatA(submissionPath, SubmissionName);
+    lstrcatA(submissionPath, "\0");
 
-    HANDLE hDest = CreateFileA(SubmissionName, GENERIC_READ | GENERIC_WRITE, 0, NULL, OPEN_ALWAYS, FILE_ATTRIBUTE_NORMAL | FILE_FLAG_OVERLAPPED, NULL);
+    printf("Submissions path: %s\n", submissionPath);
+
+    HANDLE hDest = CreateFileA(submissionPath, GENERIC_READ | GENERIC_WRITE, 0, NULL, OPEN_ALWAYS, FILE_ATTRIBUTE_NORMAL | FILE_FLAG_OVERLAPPED, NULL);
 
     if (hDest == INVALID_HANDLE_VALUE) {
         printf("CreateFileA for destination failed. LastError: %u\n", GetLastError());
+        return STATUS_UNSUCCESSFUL;
+    }
+
+    //printf("DA\n");
+
+    InitializeThreadpoolEnvironment(&CallBackEnviron);
+
+    pool = CreateThreadpool(NULL);
+
+    if (pool == NULL) {
+        printf("CreateThreadpool failed. LastError: %u\n", GetLastError());
+        return STATUS_UNSUCCESSFUL;
+    }
+
+    SetThreadpoolThreadMaximum(pool, 4);
+   
+    bRet = SetThreadpoolThreadMinimum(pool, 4);
+
+    if (bRet == FALSE) {
+        printf("SetThreadpoolThreadMinimum failed. LastError: %u\n", GetLastError());
+        return STATUS_UNSUCCESSFUL;
+    }
+
+    SetThreadpoolCallbackPool(&CallBackEnviron, pool);
+
+    DWORD bytesRead = 0;
+    LARGE_INTEGER size = { 0 };
+
+    GetFileSizeEx(hSrc, &size);
+
+    //printf("File size: %d\n", size.LowPart);
+    //printf("File size: %d\n", size.HighPart);
+    printf("File size: %llu\n", size.QuadPart);
+
+
+    DWORD numberOfChunks;
+    DWORD chunkSize;
+    uint64_t testSize = size.QuadPart;
+
+    if (testSize > 64000000) {
+        numberOfChunks = (DWORD)(testSize / 64000000);
+        chunkSize = 64000000;
+    }
+    else {
+        numberOfChunks = 1;
+        chunkSize = (DWORD)size.QuadPart;
+    }
+    
+
+    ULONGLONG fileOffset = 0;
+
+    BYTE* buf = malloc(chunkSize * sizeof(char));
+    if (!buf) {
+        return STATUS_UNSUCCESSFUL;
+    }
+
+    //printf("Chunk size: %d\n", chunkSize);
+
+    int n = numberOfChunks;
+
+    if (n <= 0) {
+        return STATUS_UNSUCCESSFUL;
+    }
+
+    printf("N=%d\n", n);
+    PTP_WORK* work = malloc(n * sizeof(PTP_WORK));
+
+    int workIndex = 0;
+    while (ReadFile(hSrc, buf, chunkSize, &bytesRead, NULL) && bytesRead > 0) {
+        pv = malloc(sizeof(FILE_CHUNK_CONTEXT));
+
+        pv->hDest = hDest;
+        pv->buffer = malloc(bytesRead);
+        memcpy(pv->buffer, buf, bytesRead);
+        
+        //printf("%s\n", buf);
+        //printf("%d\n", bytesRead);
+
+        pv->bufferSize = bytesRead;
+        pv->offset.QuadPart = fileOffset;
+
+        work[workIndex] = CreateThreadpoolWork(workcallback, (PVOID)pv, &CallBackEnviron);
+
+        if (work[workIndex] == NULL) {
+            printf("CreateThreadpoolWork failed. LastError: %u\n", GetLastError());
+        }
+
+        printf("Sent %d bytes\n", bytesRead);
+
+        SubmitThreadpoolWork(work[workIndex]);
+
+        fileOffset += bytesRead;
+
+        workIndex += 1;
+    }
+    CloseHandle(hSrc);
+
+    for (int i = 0; i < n; i++) {
+        WaitForThreadpoolWorkCallbacks(work[i], FALSE);
+        CloseThreadpoolWork(work[i]);
+    }
+
+    CloseHandle(hDest);
+
+    return STATUS_SUCCESS;
+}
+
+
+NTSTATUS WINAPI
+SafeStorageHandleRetrieve(
+    const char* SubmissionName,
+    uint16_t SubmissionNameLength,
+    const char* DestinationFilePath,
+    uint16_t DestinationFilePathLength
+)
+{
+    UNREFERENCED_PARAMETER(SubmissionNameLength);
+    UNREFERENCED_PARAMETER(DestinationFilePathLength);
+
+    PTP_POOL pool = NULL;
+    TP_CALLBACK_ENVIRON CallBackEnviron;
+    BOOL bRet = FALSE;
+    PTP_WORK_CALLBACK workcallback = MyWorkCallback;
+    PFILE_CHUNK_CONTEXT pv;
+
+    //printf("%s\n", SourceFilePath);
+
+    char submissionPath[MAX_PATH];
+    strcpy_s(submissionPath, MAX_PATH, CurrentUsersDirectory);
+    lstrcatA(submissionPath, SubmissionName);
+    lstrcatA(submissionPath, "\0");
+
+    printf("Submissions path: %s\n", submissionPath);
+
+    HANDLE hSrc = CreateFileA(submissionPath, GENERIC_READ, 0, NULL, OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL, NULL);
+
+    if (hSrc == INVALID_HANDLE_VALUE) {
+        printf("CreateFileA for source failed. LastError: %u\n", GetLastError());
+        return STATUS_UNSUCCESSFUL;
+    }
+
+    HANDLE hDest = CreateFileA(DestinationFilePath, GENERIC_READ | GENERIC_WRITE, 0, NULL, OPEN_ALWAYS, FILE_ATTRIBUTE_NORMAL | FILE_FLAG_OVERLAPPED, NULL);
+
+    if (hDest == INVALID_HANDLE_VALUE) {
+        printf("CreateFileA for desination failed. LastError: %u\n", GetLastError());
         return STATUS_UNSUCCESSFUL;
     }
 
@@ -243,19 +425,40 @@ SafeStorageHandleStore(
 
     //printf("File size: %d\n", size.LowPart);
     //printf("File size: %d\n", size.HighPart);
+    printf("File size: %llu\n", size.QuadPart);
 
-    DWORD chunkSize = (DWORD)(size.QuadPart / 4 + 1);
+
+    DWORD numberOfChunks;
+    DWORD chunkSize;
+    uint64_t testSize = size.QuadPart;
+
+    if (testSize > 64000000) {
+        numberOfChunks = (DWORD)(testSize / 64000000);
+        chunkSize = 64000000;
+    }
+    else {
+        numberOfChunks = 1;
+        chunkSize = (DWORD)size.QuadPart;
+    }
+
 
     ULONGLONG fileOffset = 0;
 
-    BYTE* buf = (BYTE*)malloc(chunkSize);
+    BYTE* buf = malloc(chunkSize * sizeof(char));
     if (!buf) {
         return STATUS_UNSUCCESSFUL;
     }
 
     //printf("Chunk size: %d\n", chunkSize);
 
-    PTP_WORK work[4];
+    int n = numberOfChunks;
+
+    if (n <= 0) {
+        return STATUS_UNSUCCESSFUL;
+    }
+
+    printf("N=%d\n", n);
+    PTP_WORK* work = malloc(n * sizeof(PTP_WORK));
 
     int workIndex = 0;
     while (ReadFile(hSrc, buf, chunkSize, &bytesRead, NULL) && bytesRead > 0) {
@@ -264,7 +467,7 @@ SafeStorageHandleStore(
         pv->hDest = hDest;
         pv->buffer = malloc(bytesRead);
         memcpy(pv->buffer, buf, bytesRead);
-        
+
         //printf("%s\n", buf);
         //printf("%d\n", bytesRead);
 
@@ -277,7 +480,7 @@ SafeStorageHandleStore(
             printf("CreateThreadpoolWork failed. LastError: %u\n", GetLastError());
         }
 
-        printf("Read %d bytes\n", bytesRead);
+        printf("Sent %d bytes\n", bytesRead);
 
         SubmitThreadpoolWork(work[workIndex]);
 
@@ -286,31 +489,14 @@ SafeStorageHandleStore(
         workIndex += 1;
     }
 
-    for (int i = 0; i < 4; i++) {
+    CloseHandle(hSrc);
+
+    for (int i = 0; i < n; i++) {
         WaitForThreadpoolWorkCallbacks(work[i], FALSE);
         CloseThreadpoolWork(work[i]);
     }
 
+    CloseHandle(hDest);
+
     return STATUS_SUCCESS;
-}
-
-
-NTSTATUS WINAPI
-SafeStorageHandleRetrieve(
-    const char* SubmissionName,
-    uint16_t SubmissionNameLength,
-    const char* DestinationFilePath,
-    uint16_t DestinationFilePathLength
-)
-{
-    /* The function is not implemented. It is your responsibility. */
-    /* After you implement the function, you can remove UNREFERENCED_PARAMETER(x). */
-    /* This is just to prevent a compilation warning that the parameter is unused. */
-
-    UNREFERENCED_PARAMETER(SubmissionName);
-    UNREFERENCED_PARAMETER(SubmissionNameLength);
-    UNREFERENCED_PARAMETER(DestinationFilePath);
-    UNREFERENCED_PARAMETER(DestinationFilePathLength);
-
-    return STATUS_NOT_IMPLEMENTED;
 }

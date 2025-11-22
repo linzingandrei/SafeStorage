@@ -1,3 +1,2 @@
-a:a
-a:a
-a:b
+UserA:p@ssWord1
+UserB:p@ssWord2
