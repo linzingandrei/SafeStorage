@@ -3,11 +3,13 @@
 
 
 #pragma comment(lib, "crypt32.lib")
+#pragma comment(lib, "Winmm.lib")
 
 
 char* CurrentUser;
 char* CurrentUsersDirectory;
 BOOLEAN isUserLoggedIn;
+TIMEOUT_FOR_FAILED_ATTEMPTS failedLoginAttemptsStruct;
 
 
 NTSTATUS WINAPI
@@ -18,6 +20,8 @@ SafeStorageInit(
     CurrentUser = calloc(11, sizeof(char));
     CurrentUsersDirectory = calloc(260, sizeof(char));
     isUserLoggedIn = FALSE;
+    failedLoginAttemptsStruct.numberOfAttemptsFailed = 1;
+
     return STATUS_SUCCESS;
 }
 
@@ -100,6 +104,49 @@ SafeStorageHandleRegister(
         return STATUS_UNSUCCESSFUL;
     }
 
+    DWORD NumberOfBytesRead;
+    char DataBuffer[256];
+    char LineBuffer[512];
+    int length = 0;
+
+    HANDLE UserDataFileVerif = CreateFileA("./users.txt", FILE_READ_DATA, FILE_SHARE_READ, NULL, OPEN_ALWAYS, FILE_ATTRIBUTE_NORMAL, NULL);
+    while (ReadFile(UserDataFileVerif, DataBuffer, 256, &NumberOfBytesRead, NULL) && NumberOfBytesRead > 0) {
+        for (int i = 0; i < (int)NumberOfBytesRead; i++) {
+            if (DataBuffer[i] == '\n') {
+                //printf("DA\n");
+                LineBuffer[length] = '\0';
+
+                char FileUsername[15] = { 0 };
+
+                int ok = 0;
+                int j;
+                for (j = 0; j < length; j++) {
+                    if (LineBuffer[j] == ':') {
+                        ok = 1;
+                        FileUsername[j] = '\0';
+                    }
+                    if (ok == 0) {
+                        FileUsername[j] = LineBuffer[j];
+                    }
+                }
+
+                //printf("Username: %s\n", FileUsername);
+
+                if (strncmp(FileUsername, Username, UsernameLength) == 0) {
+                    printf("A user with that name already exists!\n");
+                    return STATUS_UNSUCCESSFUL;
+                }
+
+                length = 0;
+            }
+            else if (DataBuffer[i] != '\r') {
+                //printf("DAr");
+                LineBuffer[length++] = DataBuffer[i];
+            }
+        }
+    }
+    CloseHandle(UserDataFileVerif);
+
     BOOLEAN atLeastOneLowercase = FALSE;
     BOOLEAN atLeastOneUppercase = FALSE;
     BOOLEAN atLeastOneDigit = FALSE;
@@ -151,9 +198,10 @@ SafeStorageHandleRegister(
     CryptBinaryToStringA((BYTE *)hashedPassword, hashedPasswordLength, CRYPT_STRING_HEX | CRYPT_STRING_NOCRLF, NULL, (DWORD *)&encryptedPasswordLength);
     char* encryptedPassword = malloc(encryptedPasswordLength);
     CryptBinaryToStringA((BYTE*)hashedPassword, hashedPasswordLength, CRYPT_STRING_HEX | CRYPT_STRING_NOCRLF, encryptedPassword, (DWORD*)&encryptedPasswordLength);
+    free(hashedPassword);
 
-    printf("Encryted password: %s\n", encryptedPassword);
-    printf("Encryted password length: %d\n", encryptedPasswordLength);
+    //printf("Encryted password: %s\n", encryptedPassword);
+    //printf("Encryted password length: %d\n", encryptedPasswordLength);
 
     char CurrentDirectoryName[MAX_PATH];
     GetCurrentDirectoryA(MAX_PATH, CurrentDirectoryName);
@@ -167,16 +215,16 @@ SafeStorageHandleRegister(
 
     char* UserData;
     int UserDataSize = UsernameLength + encryptedPasswordLength + 5;
-    printf("%d\n", UserDataSize);
+    //printf("%d\n", UserDataSize);
     UserData = calloc(UserDataSize, sizeof(char));
     UserData[0] = '\0';
 
     StringCchCatA(UserData, UserDataSize, Username);
-    printf("UserData: %s\n", UserData);
+    //printf("UserData: %s\n", UserData);
     StringCchCatA(UserData, UserDataSize, ":");
-    printf("UserData: %s\n", UserData);
+    //printf("UserData: %s\n", UserData);
     StringCchCatA(UserData, UserDataSize, encryptedPassword);
-    printf("UserData: %s\n", UserData);
+    //printf("UserData: %s\n", UserData);
     StringCchCatA(UserData, UserDataSize, "\r\n");
 
     //printf("UserData: %s\n", UserData);
@@ -186,6 +234,7 @@ SafeStorageHandleRegister(
     HANDLE UserDataFile = CreateFileA(UsersFile, FILE_APPEND_DATA, FILE_SHARE_WRITE, NULL, OPEN_ALWAYS, FILE_ATTRIBUTE_NORMAL, NULL);
     WriteFile(UserDataFile, UserData, strlen(UserData), &NumberOfBytesWrittenInUserDataFile, NULL);
     CloseHandle(UserDataFile);
+    free(UserData);
 
     free(encryptedPassword);
 
@@ -200,6 +249,8 @@ SafeStorageHandleRegister(
     StringCchCatA(UsersDirectoryPath, MAX_PATH, "\0");
 
     CreateDirectoryA(UsersDirectoryPath, NULL);
+
+    free(UsersDirectoryPath);
 
     return STATUS_SUCCESS;
 }
@@ -231,8 +282,9 @@ SafeStorageHandleLogin(
     CryptBinaryToStringA((BYTE*)hashedPassword, hashedPasswordLength, CRYPT_STRING_HEX | CRYPT_STRING_NOCRLF, NULL, (DWORD*)&encryptedPasswordLength);
     char* encryptedPassword = malloc(encryptedPasswordLength);
     CryptBinaryToStringA((BYTE*)hashedPassword, hashedPasswordLength, CRYPT_STRING_HEX | CRYPT_STRING_NOCRLF, encryptedPassword, (DWORD*)&encryptedPasswordLength);
+    free(hashedPassword);
 
-    printf("Encrypted password: %s\n", encryptedPassword);
+    //printf("Encrypted password: %s\n", encryptedPassword);
 
     HANDLE UserDataFile = CreateFileA("users.txt", GENERIC_READ, FILE_SHARE_READ, NULL, OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL, NULL);
 
@@ -247,11 +299,11 @@ SafeStorageHandleLogin(
     int length = 0;
 
     while (ReadFile(UserDataFile, DataBuffer, 256, &NumberOfBytesRead, NULL) && NumberOfBytesRead > 0) {
-        printf("Read %d bytes\n", NumberOfBytesRead);
+        //printf("Read %d bytes\n", NumberOfBytesRead);
 
         for (int i = 0; i < (int)NumberOfBytesRead; i++) {
             if (DataBuffer[i] == '\n') {
-                printf("DA\n");
+                //printf("DA\n");
                 LineBuffer[length] = '\0';
                
                 char FileUsername[15] = { 0 };
@@ -274,7 +326,7 @@ SafeStorageHandleLogin(
                 }
                 FilePassword[k] = '\0';
 
-                printf("Username: %s, Password %s\n", FileUsername, FilePassword);
+                //printf("Username: %s, Password %s\n", FileUsername, FilePassword);
 
                 if (strncmp(FileUsername, Username, UsernameLength) == 0 && strncmp(FilePassword, encryptedPassword, encryptedPasswordLength) == 0) {
                     strncpy(CurrentUser, FileUsername, UsernameLength);
@@ -288,7 +340,7 @@ SafeStorageHandleLogin(
                     StringCchCatA(CurrentDirectoryName, MAX_PATH, "\\users");
                     StringCchCopyA(UsersDirectoryPath, MAX_PATH, CurrentDirectoryName);
 
-                    printf("UsersDirectoryPath: %s\n", UsersDirectoryPath);
+                    //printf("UsersDirectoryPath: %s\n", UsersDirectoryPath);
 
                     StringCchCatA(UsersDirectoryPath, MAX_PATH, "\\");
                     StringCchCatA(UsersDirectoryPath, MAX_PATH, FileUsername);
@@ -297,9 +349,13 @@ SafeStorageHandleLogin(
 
                     strncpy(CurrentUsersDirectory, UsersDirectoryPath, MAX_PATH);
 
+                    free(UsersDirectoryPath);
+
                     printf("Welcome %s\n", FileUsername);
 
                     isUserLoggedIn = TRUE;
+
+                    free(encryptedPassword);
 
                     break;
                 }
@@ -314,6 +370,45 @@ SafeStorageHandleLogin(
     }
 
     CloseHandle(UserDataFile);
+
+    if (isUserLoggedIn == FALSE) {
+        //printf("Failed login attempts: %d\n", failedLoginAttemptsStruct.numberOfAttemptsFailed);
+
+        if (failedLoginAttemptsStruct.numberOfAttemptsFailed == 1) {
+            failedLoginAttemptsStruct.firstFailedLoginAttemptTimestamp = timeGetTime();
+        }
+
+        if (failedLoginAttemptsStruct.numberOfAttemptsFailed == 5 && (timeGetTime() - failedLoginAttemptsStruct.firstFailedLoginAttemptTimestamp) <= 5000) {
+            DWORD timeInSeconds = 60;
+
+            DWORD i = timeInSeconds;
+            printf("Too many failed login attempts!\nNext login attempt in %d seconds", i);
+            for (i = timeInSeconds - 1; i >= 1; i--) {
+                for (BYTE j = 0; j < strlen(" seconds"); j++) {
+                    printf("\b");
+                }
+                printf("\b\b%2d seconds", i);
+                fflush(stdout);
+                Sleep(1000);
+            }
+        }
+        else if (failedLoginAttemptsStruct.numberOfAttemptsFailed == 5) {
+            failedLoginAttemptsStruct.numberOfAttemptsFailed = 1;
+            failedLoginAttemptsStruct.firstFailedLoginAttemptTimestamp = timeGetTime();
+
+            printf("Failed login attempt!\n");
+
+            free(encryptedPassword);
+            return STATUS_UNSUCCESSFUL;
+        }
+
+        failedLoginAttemptsStruct.numberOfAttemptsFailed += 1;
+
+        printf("Failed login attempt!\n");
+
+        free(encryptedPassword);
+        return STATUS_UNSUCCESSFUL;
+    }
 
     return STATUS_SUCCESS;
 }

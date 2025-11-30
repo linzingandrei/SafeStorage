@@ -15,6 +15,11 @@ typedef struct _FILE_CHUNK_CONTEXT {
     LARGE_INTEGER offset;
 } FILE_CHUNK_CONTEXT, * PFILE_CHUNK_CONTEXT;
 
+typedef struct _TIMEOUT_FOR_FAILED_ATTEMPTS {
+    BYTE numberOfAttemptsFailed;
+    DWORD firstFailedLoginAttemptTimestamp;
+} TIMEOUT_FOR_FAILED_ATTEMPTS;
+
 
 /*
  * @brief       This command will be called at the beginning to initialize support for the safe storage lib.
