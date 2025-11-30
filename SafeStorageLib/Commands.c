@@ -152,7 +152,8 @@ SafeStorageHandleRegister(
     char* encryptedPassword = malloc(encryptedPasswordLength);
     CryptBinaryToStringA((BYTE*)hashedPassword, hashedPasswordLength, CRYPT_STRING_HEX | CRYPT_STRING_NOCRLF, encryptedPassword, (DWORD*)&encryptedPasswordLength);
 
-    //printf("Encryted password: %s\n", encryptedPassword);
+    printf("Encryted password: %s\n", encryptedPassword);
+    printf("Encryted password length: %d\n", encryptedPasswordLength);
 
     char CurrentDirectoryName[MAX_PATH];
     GetCurrentDirectoryA(MAX_PATH, CurrentDirectoryName);
@@ -160,34 +161,44 @@ SafeStorageHandleRegister(
     //printf("%s\n", CurrentDirectoryName);
 
     char UsersFile[MAX_PATH] = {0};
-    lstrcpyA(UsersFile, CurrentDirectoryName);
-    lstrcatA(UsersFile, "\\users.txt");
+    StringCchCopyA(UsersFile, MAX_PATH, CurrentDirectoryName);
+    StringCchCatA(UsersFile, MAX_PATH, "\\users.txt");
     //printf("%s\n", UsersFile);
 
     char* UserData;
-    int UserDataSize = UsernameLength + encryptedPasswordLength + 2;
+    int UserDataSize = UsernameLength + encryptedPasswordLength + 5;
+    printf("%d\n", UserDataSize);
     UserData = calloc(UserDataSize, sizeof(char));
+    UserData[0] = '\0';
 
-    lstrcatA(UserData, Username);
-    lstrcatA(UserData, ":");
-    lstrcatA(UserData, encryptedPassword);
-    lstrcatA(UserData, "\r\n");
+    StringCchCatA(UserData, UserDataSize, Username);
+    printf("UserData: %s\n", UserData);
+    StringCchCatA(UserData, UserDataSize, ":");
+    printf("UserData: %s\n", UserData);
+    StringCchCatA(UserData, UserDataSize, encryptedPassword);
+    printf("UserData: %s\n", UserData);
+    StringCchCatA(UserData, UserDataSize, "\r\n");
+
+    //printf("UserData: %s\n", UserData);
 
     DWORD NumberOfBytesWrittenInUserDataFile;
 
-    HANDLE UserDataFile = CreateFileA(UsersFile, FILE_APPEND_DATA, 0, NULL, OPEN_ALWAYS, FILE_ATTRIBUTE_NORMAL, NULL);
+    HANDLE UserDataFile = CreateFileA(UsersFile, FILE_APPEND_DATA, FILE_SHARE_WRITE, NULL, OPEN_ALWAYS, FILE_ATTRIBUTE_NORMAL, NULL);
     WriteFile(UserDataFile, UserData, strlen(UserData), &NumberOfBytesWrittenInUserDataFile, NULL);
     CloseHandle(UserDataFile);
 
     free(encryptedPassword);
 
     char* UsersDirectoryPath;
-    UsersDirectoryPath = lstrcatA(CurrentDirectoryName, "\\users");
+    StringCchCatA(CurrentDirectoryName, MAX_PATH, "\\users");
+    UsersDirectoryPath = calloc(MAX_PATH, sizeof(char));
+    StringCchCopyA(UsersDirectoryPath, MAX_PATH, CurrentDirectoryName);
     CreateDirectoryA(UsersDirectoryPath, NULL);
 
-    lstrcatA(UsersDirectoryPath, "\\");
-    lstrcatA(UsersDirectoryPath, Username);
-    lstrcatA(UsersDirectoryPath, "\0");
+    StringCchCatA(UsersDirectoryPath, MAX_PATH, "\\");
+    StringCchCatA(UsersDirectoryPath, MAX_PATH, Username);
+    StringCchCatA(UsersDirectoryPath, MAX_PATH, "\0");
+
     CreateDirectoryA(UsersDirectoryPath, NULL);
 
     return STATUS_SUCCESS;
@@ -207,16 +218,40 @@ SafeStorageHandleLogin(
         return STATUS_UNSUCCESSFUL;
     }
 
-    HANDLE UserDataFile = CreateFileA("users.txt", GENERIC_READ, 0, NULL, OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL, NULL);
+    char* hashedPassword = malloc(32 * sizeof(BYTE));
+    int hashedPasswordLength;
+    int status = HashPassword(Password, PasswordLength, hashedPassword, &hashedPasswordLength);
+
+    if (!NT_SUCCESS(status)) {
+        printf("Encountered issues with hashing!\n");
+        return STATUS_UNSUCCESSFUL;
+    }
+
+    int encryptedPasswordLength = 0;
+    CryptBinaryToStringA((BYTE*)hashedPassword, hashedPasswordLength, CRYPT_STRING_HEX | CRYPT_STRING_NOCRLF, NULL, (DWORD*)&encryptedPasswordLength);
+    char* encryptedPassword = malloc(encryptedPasswordLength);
+    CryptBinaryToStringA((BYTE*)hashedPassword, hashedPasswordLength, CRYPT_STRING_HEX | CRYPT_STRING_NOCRLF, encryptedPassword, (DWORD*)&encryptedPasswordLength);
+
+    printf("Encrypted password: %s\n", encryptedPassword);
+
+    HANDLE UserDataFile = CreateFileA("users.txt", GENERIC_READ, FILE_SHARE_READ, NULL, OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL, NULL);
+
+    if (UserDataFile == INVALID_HANDLE_VALUE) {
+        printf("Failed to open file, error %lu\n", GetLastError());
+        return STATUS_UNSUCCESSFUL;
+    }
 
     DWORD NumberOfBytesRead;
-    char DataBuffer[4096];
+    char DataBuffer[256];
     char LineBuffer[512];
     int length = 0;
 
     while (ReadFile(UserDataFile, DataBuffer, 256, &NumberOfBytesRead, NULL) && NumberOfBytesRead > 0) {
+        printf("Read %d bytes\n", NumberOfBytesRead);
+
         for (int i = 0; i < (int)NumberOfBytesRead; i++) {
             if (DataBuffer[i] == '\n') {
+                printf("DA\n");
                 LineBuffer[length] = '\0';
                
                 char FileUsername[15] = { 0 };
@@ -239,23 +274,7 @@ SafeStorageHandleLogin(
                 }
                 FilePassword[k] = '\0';
 
-                //printf("Username: %s, Password %s\n", FileUsername, FilePassword);
-
-                char* hashedPassword = malloc(32 * sizeof(BYTE));
-                int hashedPasswordLength;
-                int status = HashPassword(Password, PasswordLength, hashedPassword, &hashedPasswordLength);
-
-                if (!NT_SUCCESS(status)) {
-                    printf("Encountered issues with hashing!\n");
-                    return STATUS_UNSUCCESSFUL;
-                }
-
-                int encryptedPasswordLength = 0;
-                CryptBinaryToStringA((BYTE*)hashedPassword, hashedPasswordLength, CRYPT_STRING_HEX | CRYPT_STRING_NOCRLF, NULL, (DWORD*)&encryptedPasswordLength);
-                char* encryptedPassword = malloc(encryptedPasswordLength);
-                CryptBinaryToStringA((BYTE*)hashedPassword, hashedPasswordLength, CRYPT_STRING_HEX | CRYPT_STRING_NOCRLF, encryptedPassword, (DWORD*)&encryptedPasswordLength);
-
-                //printf("Encryted password: %s\n", encryptedPassword);
+                printf("Username: %s, Password %s\n", FileUsername, FilePassword);
 
                 if (strncmp(FileUsername, Username, UsernameLength) == 0 && strncmp(FilePassword, encryptedPassword, encryptedPasswordLength) == 0) {
                     strncpy(CurrentUser, FileUsername, UsernameLength);
@@ -263,30 +282,38 @@ SafeStorageHandleLogin(
                     char CurrentDirectoryName[MAX_PATH];
                     GetCurrentDirectoryA(MAX_PATH, CurrentDirectoryName);
                     char* UsersDirectoryPath;
-                    UsersDirectoryPath = lstrcatA(CurrentDirectoryName, "\\users");
+                    UsersDirectoryPath = calloc(MAX_PATH, sizeof(char));
+                    UsersDirectoryPath[0] = '\0';
 
-                    lstrcatA(UsersDirectoryPath, "\\");
-                    lstrcatA(UsersDirectoryPath, FileUsername);
-                    lstrcatA(UsersDirectoryPath, "\\");
-                    lstrcatA(UsersDirectoryPath, "\0");
+                    StringCchCatA(CurrentDirectoryName, MAX_PATH, "\\users");
+                    StringCchCopyA(UsersDirectoryPath, MAX_PATH, CurrentDirectoryName);
+
+                    printf("UsersDirectoryPath: %s\n", UsersDirectoryPath);
+
+                    StringCchCatA(UsersDirectoryPath, MAX_PATH, "\\");
+                    StringCchCatA(UsersDirectoryPath, MAX_PATH, FileUsername);
+                    StringCchCatA(UsersDirectoryPath, MAX_PATH, "\\");
+                    StringCchCatA(UsersDirectoryPath, MAX_PATH, "\0");
 
                     strncpy(CurrentUsersDirectory, UsersDirectoryPath, MAX_PATH);
 
                     printf("Welcome %s\n", FileUsername);
+
+                    isUserLoggedIn = TRUE;
+
                     break;
                 }
 
                 length = 0;
             }
             else if (DataBuffer[i] != '\r') {
+                //printf("DAr");
                 LineBuffer[length++] = DataBuffer[i];
             }
         }
     }
 
     CloseHandle(UserDataFile);
-
-    isUserLoggedIn = TRUE;
 
     return STATUS_SUCCESS;
 }
@@ -381,7 +408,9 @@ SafeStorageHandleStore(
 
     //printf("%s\n", SourceFilePath);
 
-    HANDLE hSrc = CreateFileA(SourceFilePath, GENERIC_READ, 0, NULL, OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL, NULL);
+    HANDLE hSrc = CreateFileA(SourceFilePath, GENERIC_READ, FILE_SHARE_READ, NULL, OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL, NULL);
+
+    //printf("Path: %s\n", SourceFilePath);
 
     if (hSrc == INVALID_HANDLE_VALUE) {
         printf("CreateFileA for source failed. LastError: %u\n", GetLastError());
@@ -390,12 +419,12 @@ SafeStorageHandleStore(
 
     char submissionPath[MAX_PATH];
     strcpy_s(submissionPath, MAX_PATH, CurrentUsersDirectory);
-    lstrcatA(submissionPath, SubmissionName);
-    lstrcatA(submissionPath, "\0");
+    StringCchCatA(submissionPath, MAX_PATH, SubmissionName);
+    StringCchCatA(submissionPath, MAX_PATH, "\0");
 
     //printf("Submissions path: %s\n", submissionPath);
 
-    HANDLE hDest = CreateFileA(submissionPath, GENERIC_READ | GENERIC_WRITE, 0, NULL, OPEN_ALWAYS, FILE_ATTRIBUTE_NORMAL | FILE_FLAG_OVERLAPPED, NULL);
+    HANDLE hDest = CreateFileA(submissionPath, GENERIC_WRITE, FILE_SHARE_WRITE, NULL, OPEN_ALWAYS, FILE_ATTRIBUTE_NORMAL | FILE_FLAG_OVERLAPPED, NULL);
 
     if (hDest == INVALID_HANDLE_VALUE) {
         printf("CreateFileA for destination failed. LastError: %u\n", GetLastError());
@@ -503,7 +532,7 @@ SafeStorageHandleStore(
     free(buf);
 
     for (int i = 0; i < n; i++) {
-        WaitForThreadpoolWorkCallbacks(work[i], TRUE);
+        WaitForThreadpoolWorkCallbacks(work[i], FALSE);
 
         CloseThreadpoolWork(work[i]);
     }
@@ -542,19 +571,19 @@ SafeStorageHandleRetrieve(
 
     char submissionPath[MAX_PATH];
     strcpy_s(submissionPath, MAX_PATH, CurrentUsersDirectory);
-    lstrcatA(submissionPath, SubmissionName);
-    lstrcatA(submissionPath, "\0");
+    StringCchCatA(submissionPath, MAX_PATH, SubmissionName);
+    StringCchCatA(submissionPath, MAX_PATH, "\0");
 
     //printf("Submissions path: %s\n", submissionPath);
 
-    HANDLE hSrc = CreateFileA(submissionPath, GENERIC_READ, 0, NULL, OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL, NULL);
+    HANDLE hSrc = CreateFileA(submissionPath, GENERIC_READ, FILE_SHARE_READ, NULL, OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL, NULL);
 
     if (hSrc == INVALID_HANDLE_VALUE) {
         printf("CreateFileA for source failed. LastError: %u\n", GetLastError());
         return STATUS_UNSUCCESSFUL;
     }
 
-    HANDLE hDest = CreateFileA(DestinationFilePath, GENERIC_READ | GENERIC_WRITE, 0, NULL, OPEN_ALWAYS, FILE_ATTRIBUTE_NORMAL | FILE_FLAG_OVERLAPPED, NULL);
+    HANDLE hDest = CreateFileA(DestinationFilePath, GENERIC_READ | GENERIC_WRITE, FILE_SHARE_WRITE, NULL, OPEN_ALWAYS, FILE_ATTRIBUTE_NORMAL | FILE_FLAG_OVERLAPPED, NULL);
 
     if (hDest == INVALID_HANDLE_VALUE) {
         printf("CreateFileA for desination failed. LastError: %u\n", GetLastError());
