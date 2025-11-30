@@ -102,5 +102,9 @@ main()
     } while (TRUE);
 
     SafeStorageDeinit();
+
+    // Added for memory leaks
+    _CrtDumpMemoryLeaks();
+
     return 0;
 }

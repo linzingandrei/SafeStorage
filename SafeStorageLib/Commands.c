@@ -2,8 +2,13 @@
 #include <tchar.h>
 
 
+#pragma comment(lib, "crypt32.lib")
+
+
 char* CurrentUser;
 char* CurrentUsersDirectory;
+BOOLEAN isUserLoggedIn;
+
 
 NTSTATUS WINAPI
 SafeStorageInit(
@@ -12,6 +17,7 @@ SafeStorageInit(
 {
     CurrentUser = calloc(11, sizeof(char));
     CurrentUsersDirectory = calloc(260, sizeof(char));
+    isUserLoggedIn = FALSE;
     return STATUS_SUCCESS;
 }
 
@@ -21,10 +27,50 @@ SafeStorageDeinit(
     VOID
 )
 {
-    /* The function is not implemented. It is your responsibility. */
-    /* Here you can clean up any global objects you have created earlier. */
+    free(CurrentUser);
+    free(CurrentUsersDirectory);
 
     return;
+}
+
+
+NTSTATUS WINAPI
+HashPassword(
+    const char* Password,
+    const int PasswordLength,
+    char* HashedPassword,
+    int* HashedPasswordLength
+)
+{    
+    UNREFERENCED_PARAMETER(HashedPasswordLength);
+
+    NTSTATUS status;
+    BCRYPT_ALG_HANDLE hAlgorithm;
+    DWORD bytesCopied;
+
+    status = BCryptOpenAlgorithmProvider(&hAlgorithm, BCRYPT_SHA256_ALGORITHM, NULL, 0);
+
+    if (!NT_SUCCESS(status)) {
+        printf("Failed to get algorithm provider, status: %08x\n", status);
+        return STATUS_UNSUCCESSFUL;
+    }
+
+    status = BCryptGetProperty(hAlgorithm, BCRYPT_HASH_LENGTH, (PUCHAR)HashedPasswordLength, sizeof(DWORD), &bytesCopied, 0);
+    //printf("HASH LENGTH: %d\n", *HashedPasswordLength);
+
+    if (!NT_SUCCESS(status)) {
+        printf("Failed to get algorithm property, status: %08x\n", status);
+        return STATUS_UNSUCCESSFUL;
+    }
+
+    status = BCryptHash(hAlgorithm, NULL, 0, (PUCHAR)Password, PasswordLength, (PUCHAR)HashedPassword, *HashedPasswordLength);
+
+    if (!NT_SUCCESS(status)) {
+        printf("Failed to use hash algorithm, status: %08x\n", status);
+        return STATUS_UNSUCCESSFUL;
+    }
+
+    return STATUS_SUCCESS;
 }
 
 
@@ -36,23 +82,95 @@ SafeStorageHandleRegister(
     uint16_t PasswordLength
 )
 {
+    if (isUserLoggedIn == TRUE) {
+        printf("Not possible\n");
+        return STATUS_UNSUCCESSFUL;
+    }
+
+    if (UsernameLength >= 5 && UsernameLength <= 10) {
+        for (int i = 0; i < UsernameLength; i++) {
+            if (!((Username[i] >= 'a' && Username[i] <= 'z') || (Username[i] >= 'A' && Username[i] <= 'Z'))) {
+                printf("Username contains wrong characters!\n");
+                return STATUS_UNSUCCESSFUL;
+            }
+        }
+    }
+    else {
+        printf("Username length is incorrect!\n");
+        return STATUS_UNSUCCESSFUL;
+    }
+
+    BOOLEAN atLeastOneLowercase = FALSE;
+    BOOLEAN atLeastOneUppercase = FALSE;
+    BOOLEAN atLeastOneDigit = FALSE;
+    BOOLEAN atLeastOneSpecialCharacter = FALSE;
+
+    if (PasswordLength >= 5 && PasswordLength <= 64) {
+        for (int i = 0; i < PasswordLength; i++) {
+            if (Password[i] >= 'a' && Password[i] <= 'z') {
+                atLeastOneLowercase = TRUE;
+            }
+            else if (Password[i] >= 'A' && Password[i] <= 'Z') {
+                atLeastOneUppercase = TRUE;
+            }
+            else if (Password[i] >= '0' && Password[i] <= '9') {
+                atLeastOneDigit = TRUE;
+            }
+            else if (Password[i] == '!' || Password[i] == '@' || Password[i] == '#' || Password[i] == '$' || Password[i] == '%' || Password[i] == '^' || Password[i] == '&') {
+                atLeastOneSpecialCharacter = TRUE;
+            }
+            else {
+                printf("Password contains wrong characters!\n");
+                return STATUS_UNSUCCESSFUL;
+            }
+        }
+        if (!(atLeastOneLowercase == TRUE && atLeastOneUppercase == TRUE && atLeastOneDigit == TRUE && atLeastOneSpecialCharacter == TRUE)) {
+            printf("%d", atLeastOneLowercase);
+            printf("%d", atLeastOneUppercase);
+            printf("%d", atLeastOneDigit);
+            printf("%d", atLeastOneSpecialCharacter);
+            printf("Password isn't correct format\n");
+            return STATUS_UNSUCCESSFUL;
+        }
+    }
+    else {
+        printf("Password length is incorrect!\n");
+        return STATUS_UNSUCCESSFUL;
+    }
+
+    char* hashedPassword = malloc(32 * sizeof(BYTE));
+    int hashedPasswordLength;
+    int status = HashPassword(Password, PasswordLength, hashedPassword, &hashedPasswordLength);
+
+    if (!NT_SUCCESS(status)) {
+        printf("Encountered issues with hashing!\n");
+        return STATUS_UNSUCCESSFUL;
+    }
+
+    int encryptedPasswordLength = 0;
+    CryptBinaryToStringA((BYTE *)hashedPassword, hashedPasswordLength, CRYPT_STRING_HEX | CRYPT_STRING_NOCRLF, NULL, (DWORD *)&encryptedPasswordLength);
+    char* encryptedPassword = malloc(encryptedPasswordLength);
+    CryptBinaryToStringA((BYTE*)hashedPassword, hashedPasswordLength, CRYPT_STRING_HEX | CRYPT_STRING_NOCRLF, encryptedPassword, (DWORD*)&encryptedPasswordLength);
+
+    //printf("Encryted password: %s\n", encryptedPassword);
+
     char CurrentDirectoryName[MAX_PATH];
     GetCurrentDirectoryA(MAX_PATH, CurrentDirectoryName);
 
-    printf("%s\n", CurrentDirectoryName);
+    //printf("%s\n", CurrentDirectoryName);
 
     char UsersFile[MAX_PATH] = {0};
     lstrcpyA(UsersFile, CurrentDirectoryName);
     lstrcatA(UsersFile, "\\users.txt");
-    printf("%s\n", UsersFile);
+    //printf("%s\n", UsersFile);
 
     char* UserData;
-    int UserDataSize = UsernameLength + PasswordLength + 2;
+    int UserDataSize = UsernameLength + encryptedPasswordLength + 2;
     UserData = calloc(UserDataSize, sizeof(char));
 
     lstrcatA(UserData, Username);
     lstrcatA(UserData, ":");
-    lstrcatA(UserData, Password);
+    lstrcatA(UserData, encryptedPassword);
     lstrcatA(UserData, "\r\n");
 
     DWORD NumberOfBytesWrittenInUserDataFile;
@@ -60,6 +178,8 @@ SafeStorageHandleRegister(
     HANDLE UserDataFile = CreateFileA(UsersFile, FILE_APPEND_DATA, 0, NULL, OPEN_ALWAYS, FILE_ATTRIBUTE_NORMAL, NULL);
     WriteFile(UserDataFile, UserData, strlen(UserData), &NumberOfBytesWrittenInUserDataFile, NULL);
     CloseHandle(UserDataFile);
+
+    free(encryptedPassword);
 
     char* UsersDirectoryPath;
     UsersDirectoryPath = lstrcatA(CurrentDirectoryName, "\\users");
@@ -69,7 +189,6 @@ SafeStorageHandleRegister(
     lstrcatA(UsersDirectoryPath, Username);
     lstrcatA(UsersDirectoryPath, "\0");
     CreateDirectoryA(UsersDirectoryPath, NULL);
-
 
     return STATUS_SUCCESS;
 }
@@ -83,6 +202,11 @@ SafeStorageHandleLogin(
     uint16_t PasswordLength
 )
 {
+    if (isUserLoggedIn == TRUE) {
+        printf("Not possible\n");
+        return STATUS_UNSUCCESSFUL;
+    }
+
     HANDLE UserDataFile = CreateFileA("users.txt", GENERIC_READ, 0, NULL, OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL, NULL);
 
     DWORD NumberOfBytesRead;
@@ -90,14 +214,13 @@ SafeStorageHandleLogin(
     char LineBuffer[512];
     int length = 0;
 
-    while (ReadFile(UserDataFile, DataBuffer, 4096, &NumberOfBytesRead, NULL) && NumberOfBytesRead > 0) {
+    while (ReadFile(UserDataFile, DataBuffer, 256, &NumberOfBytesRead, NULL) && NumberOfBytesRead > 0) {
         for (int i = 0; i < (int)NumberOfBytesRead; i++) {
             if (DataBuffer[i] == '\n') {
                 LineBuffer[length] = '\0';
-                
-
-                char FileUsername[30] = { 0 };
-                char FilePassword[50] = { 0 };
+               
+                char FileUsername[15] = { 0 };
+                char FilePassword[150] = { 0 };
 
                 int ok = 0;
                 int j;
@@ -116,9 +239,25 @@ SafeStorageHandleLogin(
                 }
                 FilePassword[k] = '\0';
 
-                printf("Username: %s, Password %s\n", FileUsername, FilePassword);
+                //printf("Username: %s, Password %s\n", FileUsername, FilePassword);
 
-                if (strncmp(FileUsername, Username, UsernameLength) == 0 && strncmp(FilePassword, Password, PasswordLength) == 0) {
+                char* hashedPassword = malloc(32 * sizeof(BYTE));
+                int hashedPasswordLength;
+                int status = HashPassword(Password, PasswordLength, hashedPassword, &hashedPasswordLength);
+
+                if (!NT_SUCCESS(status)) {
+                    printf("Encountered issues with hashing!\n");
+                    return STATUS_UNSUCCESSFUL;
+                }
+
+                int encryptedPasswordLength = 0;
+                CryptBinaryToStringA((BYTE*)hashedPassword, hashedPasswordLength, CRYPT_STRING_HEX | CRYPT_STRING_NOCRLF, NULL, (DWORD*)&encryptedPasswordLength);
+                char* encryptedPassword = malloc(encryptedPasswordLength);
+                CryptBinaryToStringA((BYTE*)hashedPassword, hashedPasswordLength, CRYPT_STRING_HEX | CRYPT_STRING_NOCRLF, encryptedPassword, (DWORD*)&encryptedPasswordLength);
+
+                //printf("Encryted password: %s\n", encryptedPassword);
+
+                if (strncmp(FileUsername, Username, UsernameLength) == 0 && strncmp(FilePassword, encryptedPassword, encryptedPasswordLength) == 0) {
                     strncpy(CurrentUser, FileUsername, UsernameLength);
 
                     char CurrentDirectoryName[MAX_PATH];
@@ -147,6 +286,8 @@ SafeStorageHandleLogin(
 
     CloseHandle(UserDataFile);
 
+    isUserLoggedIn = TRUE;
+
     return STATUS_SUCCESS;
 }
 
@@ -156,6 +297,13 @@ SafeStorageHandleLogout(
     VOID
 )
 {
+    if (isUserLoggedIn == FALSE) {
+        printf("Not possible\n");
+        return STATUS_UNSUCCESSFUL;
+    }
+
+    isUserLoggedIn = FALSE;
+
     for (int i = 0; i < 11; i++) {
         CurrentUser[i] = '\0';
     }
@@ -198,9 +346,7 @@ MyWorkCallback(
         }
     }
 
-    // Not working. Not sure how to display them without waiting in the worker which would make no sense
-    // printf("Wrote %d bytes\n", bytesWritten); 
-
+    // For debugging purposes
     /*printf("Thread %d\n", GetCurrentThreadId());
     Sleep(3000);
     printf("Thread %d\n", GetCurrentThreadId());
@@ -219,6 +365,11 @@ SafeStorageHandleStore(
     uint16_t SourceFilePathLength
 )
 {
+    if (isUserLoggedIn == FALSE) {
+        printf("Not possible\n");
+        return STATUS_UNSUCCESSFUL;
+    }
+
     UNREFERENCED_PARAMETER(SubmissionNameLength);
     UNREFERENCED_PARAMETER(SourceFilePathLength);
 
@@ -242,7 +393,7 @@ SafeStorageHandleStore(
     lstrcatA(submissionPath, SubmissionName);
     lstrcatA(submissionPath, "\0");
 
-    printf("Submissions path: %s\n", submissionPath);
+    //printf("Submissions path: %s\n", submissionPath);
 
     HANDLE hDest = CreateFileA(submissionPath, GENERIC_READ | GENERIC_WRITE, 0, NULL, OPEN_ALWAYS, FILE_ATTRIBUTE_NORMAL | FILE_FLAG_OVERLAPPED, NULL);
 
@@ -280,7 +431,7 @@ SafeStorageHandleStore(
 
     //printf("File size: %d\n", size.LowPart);
     //printf("File size: %d\n", size.HighPart);
-    printf("File size: %llu\n", size.QuadPart);
+    //printf("File size: %llu\n", size.QuadPart);
 
 
     DWORD numberOfChunks;
@@ -312,15 +463,19 @@ SafeStorageHandleStore(
         return STATUS_UNSUCCESSFUL;
     }
 
-    printf("N=%d\n", n);
-    PTP_WORK* work = malloc(n * sizeof(PTP_WORK));
+    //printf("N=%d\n", n);
+    PTP_WORK work[300];
 
     int workIndex = 0;
     while (ReadFile(hSrc, buf, chunkSize, &bytesRead, NULL) && bytesRead > 0) {
         pv = malloc(sizeof(FILE_CHUNK_CONTEXT));
 
         pv->hDest = hDest;
+
+        printf("Bytes read: %d\n", bytesRead);
+
         pv->buffer = malloc(bytesRead);
+
         memcpy(pv->buffer, buf, bytesRead);
         
         //printf("%s\n", buf);
@@ -343,12 +498,17 @@ SafeStorageHandleStore(
 
         workIndex += 1;
     }
+
     CloseHandle(hSrc);
+    free(buf);
 
     for (int i = 0; i < n; i++) {
-        WaitForThreadpoolWorkCallbacks(work[i], FALSE);
+        WaitForThreadpoolWorkCallbacks(work[i], TRUE);
+
         CloseThreadpoolWork(work[i]);
     }
+
+    //free(work);
 
     CloseHandle(hDest);
 
@@ -364,6 +524,11 @@ SafeStorageHandleRetrieve(
     uint16_t DestinationFilePathLength
 )
 {
+    if (isUserLoggedIn == FALSE) {
+        printf("Not possible\n");
+        return STATUS_UNSUCCESSFUL;
+    }
+
     UNREFERENCED_PARAMETER(SubmissionNameLength);
     UNREFERENCED_PARAMETER(DestinationFilePathLength);
 
@@ -380,7 +545,7 @@ SafeStorageHandleRetrieve(
     lstrcatA(submissionPath, SubmissionName);
     lstrcatA(submissionPath, "\0");
 
-    printf("Submissions path: %s\n", submissionPath);
+    //printf("Submissions path: %s\n", submissionPath);
 
     HANDLE hSrc = CreateFileA(submissionPath, GENERIC_READ, 0, NULL, OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL, NULL);
 
@@ -425,7 +590,7 @@ SafeStorageHandleRetrieve(
 
     //printf("File size: %d\n", size.LowPart);
     //printf("File size: %d\n", size.HighPart);
-    printf("File size: %llu\n", size.QuadPart);
+    //printf("File size: %llu\n", size.QuadPart);
 
 
     DWORD numberOfChunks;
@@ -457,8 +622,8 @@ SafeStorageHandleRetrieve(
         return STATUS_UNSUCCESSFUL;
     }
 
-    printf("N=%d\n", n);
-    PTP_WORK* work = malloc(n * sizeof(PTP_WORK));
+    //printf("N=%d\n", n);
+    PTP_WORK work[300];
 
     int workIndex = 0;
     while (ReadFile(hSrc, buf, chunkSize, &bytesRead, NULL) && bytesRead > 0) {

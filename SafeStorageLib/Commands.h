@@ -6,6 +6,8 @@
 EXTERN_C_START;
 
 
+#define NT_SUCCESS(Status)  (((NTSTATUS)(Status)) >= 0)
+
 typedef struct _FILE_CHUNK_CONTEXT {
     HANDLE hDest;
     BYTE* buffer;
